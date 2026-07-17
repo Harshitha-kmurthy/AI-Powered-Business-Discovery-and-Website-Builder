@@ -18,3 +18,5 @@ class WebsiteRequest(BaseModel):
     lat: float | None = None
 
     lon: float | None = None
+
+    images: list[str] | None = []

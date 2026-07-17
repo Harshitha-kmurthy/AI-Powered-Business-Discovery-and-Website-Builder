@@ -76,7 +76,7 @@ export default function BusinessDetails() {
       </header>
 
       <main style={S.main}>
-        <button style={S.backBtn} onClick={() => navigate("/")}>
+        <button style={S.backBtn} onClick={() => navigate("/dashboard")}>
           <IconBack /> Back to results
         </button>
 
@@ -102,8 +102,15 @@ export default function BusinessDetails() {
             <div style={S.gallery}>
               {/* Main image */}
               <div style={S.mainImgWrap}>
-                <img src={images[imgIdx]} alt={biz.name} style={S.mainImg}
-                  onError={e => { e.target.src = ""; e.target.style.display = "none"; }} />
+                <img
+                  src={images[imgIdx]}
+                  alt={biz.name}
+                  style={S.mainImg}
+                  referrerPolicy="no-referrer"
+                  crossOrigin="anonymous"
+                  loading="lazy"
+                  onError={e => { e.target.style.display = "none"; }}
+                />
               </div>
               {/* Thumbnails */}
               {images.length > 1 && (
@@ -111,8 +118,15 @@ export default function BusinessDetails() {
                   {images.map((src, i) => (
                     <div key={i} style={{ ...S.thumb, ...(i === imgIdx ? S.thumbActive : {}) }}
                       onClick={() => setImgIdx(i)}>
-                      <img src={src} alt="" style={S.thumbImg}
-                        onError={e => { e.target.parentElement.style.display = "none"; }} />
+                      <img
+                        src={src}
+                        alt=""
+                        style={S.thumbImg}
+                        referrerPolicy="no-referrer"
+                        crossOrigin="anonymous"
+                        loading="lazy"
+                        onError={e => { e.target.parentElement.style.display = "none"; }}
+                      />
                     </div>
                   ))}
                 </div>
@@ -275,8 +289,8 @@ const S = {
   // Gallery
   galleryCard: { background:"#0d1120", border:"1px solid #1c2540", borderRadius:12, padding:"1.25rem 1.5rem", marginBottom:"1.5rem" },
   gallery: { marginTop:"0.85rem" },
-  mainImgWrap: { width:"100%", height:300, borderRadius:8, overflow:"hidden", background:"#080c14", marginBottom:"0.75rem" },
-  mainImg: { width:"100%", height:"100%", objectFit:"cover", display:"block" },
+ mainImgWrap: { width:"100%", height:"auto", borderRadius:8, overflow:"hidden", background:"#000", marginBottom:"0.75rem", alignItems:"center", justifyContent:"center" },
+mainImg: { width:"100%", height:"100%"  },
   thumbRow: { display:"flex", gap:"0.5rem", flexWrap:"wrap" },
   thumb: { width:72, height:56, borderRadius:6, overflow:"hidden", cursor:"pointer", border:"2px solid transparent", transition:"border-color 0.15s" },
   thumbActive: { border:"2px solid #4f8ef7" },

@@ -56,33 +56,115 @@ async def get_text(page, selectors: list[str]) -> str:
     return ""
 
 
+def build_display_url(src: str) -> str | None:
+    """
+    Rewrite a Google photo URL to a safe, larger display size.
+    Strips everything after the first '=' and appends a known-good size
+    parameter, so the result is always a well-formed CDN URL regardless
+    of what suffix Google originally embedded.
+    Returns None if src doesn't look like a valid Google image URL.
+    """
+    if not src or ("googleusercontent" not in src and "ggpht" not in src):
+        return None
+
+    # Split off any existing size/param suffix that starts with '='
+    base = src.split("=")[0]
+    if not base.startswith("http"):
+        return None
+
+    # Standard, well-supported Google photo size parameter
+    return f"{base}=w800-h600-k-no"
+
+
 async def scrape_images(page) -> list[str]:
     """Scrape up to 5 image URLs from the place's photo section."""
-    images = []
+    images: list[str] = []
     try:
-        # Click the photos button/tab if present
-        photo_btn = page.locator('button[aria-label*="photo" i], a[aria-label*="photo" i]').first
-        if await photo_btn.count() > 0:
-            await photo_btn.click(timeout=3000)
-            await page.wait_for_timeout(1500)
+        # Try to open the photo gallery
+        photo_btn = page.locator(
+            'button[aria-label*="Photo" i], button[jsaction*="photo"], '
+            'a[aria-label*="Photo" i], div[jsaction*="pane.heroHeaderImage"]'
+        ).first
 
-        # Grab images from the gallery
+        opened_gallery = False
+        if await photo_btn.count() > 0:
+            try:
+                await photo_btn.click(timeout=3000)
+                opened_gallery = True
+            except Exception:
+                pass
+
+        # Poll until images load (up to ~3 s) instead of a fixed sleep
+        if opened_gallery:
+            for _ in range(6):
+                count = await page.locator(
+                    'img[src*="googleusercontent"], img[src*="ggpht"]'
+                ).count()
+                if count >= 3:
+                    break
+                await page.wait_for_timeout(500)
+
+        # Collect from <img src>
         img_els = page.locator('img[src*="googleusercontent"], img[src*="ggpht"]')
         count = await img_els.count()
-        for i in range(min(count, 8)):
+        for i in range(min(count, 20)):
             try:
-                src = await img_els.nth(i).get_attribute("src", timeout=2000)
-                if src and "googleusercontent" in src or (src and "ggpht" in src):
-                    # Get larger version by removing size constraints
-                    src = re.sub(r"=w\d+-h\d+.*$", "=w800-h600-k-no", src)
-                    if src not in images:
-                        images.append(src)
-                        if len(images) >= 5:
-                            break
+                src = await img_els.nth(i).get_attribute("src", timeout=1500)
+                if not src:
+                    continue
+                if "googleusercontent" not in src and "ggpht" not in src:
+                    continue
+
+                # Skip tiny avatar/icon-sized thumbnails (reviewer profile pics etc.)
+                # Filter using actual width/height from the URL before rewriting
+                size_match = re.search(r"=w(\d+)-h(\d+)", src)
+                if size_match:
+                    w, h = int(size_match.group(1)), int(size_match.group(2))
+                    if w < 100 or h < 100:
+                        continue  # too small — likely a reviewer avatar
+
+                clean_url = build_display_url(src)
+                if clean_url and clean_url not in images:
+                    images.append(clean_url)
+                    if len(images) >= 5:
+                        break
             except Exception:
                 continue
-    except Exception:
-        pass
+
+        # Fallback: some hero images are CSS background-image, not <img src>
+        if len(images) == 0:
+            bg_els = page.locator(
+                'button[jsaction*="heroHeaderImage"] div, div[style*="googleusercontent"]'
+            )
+            bcount = await bg_els.count()
+            for i in range(min(bcount, 10)):
+                try:
+                    style = await bg_els.nth(i).get_attribute("style", timeout=1000)
+                    if style and ("googleusercontent" in style or "ggpht" in style):
+                        m = re.search(r'url\("?(https://[^")]+)"?\)', style)
+                        if m:
+                            clean_url = build_display_url(m.group(1))
+                            if clean_url and clean_url not in images:
+                                images.append(clean_url)
+                                if len(images) >= 5:
+                                    break
+                except Exception:
+                    continue
+
+        # Close the gallery so it doesn't interfere with further scraping
+        if opened_gallery:
+            try:
+                close_btn = page.locator(
+                    'button[aria-label*="Close" i], button[jsaction*="close"]'
+                ).first
+                if await close_btn.count() > 0:
+                    await close_btn.click(timeout=1500)
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"  ⚠️  scrape_images error: {str(e)[:100]}")
+
     return images
 
 
@@ -158,8 +240,13 @@ async def scrape_place(context, url: str) -> dict | None:
             except Exception:
                 continue
 
-        # ✅ NEW: Scrape images
+        # Images (with retry-poll + CSS background-image fallback)
         data["images"] = await scrape_images(page)
+
+        # Debug log — remove or comment out in production
+        print(f"  📸 {data.get('name', '?')}: {len(data['images'])} images found")
+        for img_url in data["images"]:
+            print(f"      {img_url}")
 
         lat, lng = extract_lat_lng(page.url)
         data["lat"]    = lat
@@ -180,7 +267,7 @@ async def run_google_scraper(
     business: str,
     city: str,
     limit: int = 10,
-    concurrency: int = 5,
+    concurrency: int = 3,
 ) -> list[dict]:
     search_url = (
         "https://www.google.com/maps/search/"
@@ -221,6 +308,7 @@ async def run_google_scraper(
             await browser.close()
             return []
 
+        # Dismiss cookie/consent banners if present
         for sel in ['button[aria-label="Accept all"]', 'button[jsname="b3VHJd"]']:
             try:
                 btn = page.locator(sel).first
@@ -231,6 +319,7 @@ async def run_google_scraper(
             except Exception:
                 pass
 
+        # Scroll the results feed until we have enough links
         panel = page.locator('div[role="feed"]')
         scroll_attempts, last_count = 0, 0
         while scroll_attempts < 12:
@@ -249,6 +338,7 @@ async def run_google_scraper(
                 scroll_attempts = 0
                 last_count = cur
 
+        # Deduplicate place URLs
         links = page.locator('a[href*="/maps/place/"]')
         total = await links.count()
         seen: set[str] = set()
@@ -267,6 +357,7 @@ async def run_google_scraper(
 
         await page.close()
 
+        # Scrape each place concurrently (bounded by semaphore)
         sem = asyncio.Semaphore(concurrency)
 
         async def bounded_scrape(url: str):
